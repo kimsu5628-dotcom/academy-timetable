@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-
+import { supabase } from "./lib/supabase";
 const defaultRooms = ['101호', '102호', '301호', '302호', '401호'];
 
 const defaultTeacherColors = {
@@ -268,6 +268,41 @@ function getDateLabel(dateData) {
 }
 
 export default function WeeklyAcademyTimeline() {
+  const saveToSupabase = async (payload) => {
+    const { error } = await supabase
+      .from("schedules")
+      .upsert(
+        {
+          id: "main",
+          data: payload,
+        },
+        {
+          onConflict: "id",
+        }
+      );
+
+    if (error) {
+      console.error("Supabase save error:", error);
+      return false;
+    }
+
+    return true;
+  };
+
+  const loadFromSupabase = async () => {
+    const { data, error } = await supabase
+      .from("schedules")
+      .select("data")
+      .eq("id", "main")
+      .maybeSingle();
+
+    if (error) {
+      console.error("Supabase load error:", error);
+      return null;
+    }
+
+    return data?.data || null;
+  };
   const [activeTab, setActiveTab] = useState('current');
   const [regularDays, setRegularDays] = useState(baseDays);
   const [specialEvents, setSpecialEvents] = useState([]);
@@ -284,6 +319,8 @@ export default function WeeklyAcademyTimeline() {
     startDate: '',
     endDate: '',
   });
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('');
 
   const todayString = getTodayString();
 
@@ -361,39 +398,75 @@ export default function WeeklyAcademyTimeline() {
   const isEditing = Boolean(form.id);
 
   useEffect(() => {
-    const savedRegular = localStorage.getItem('academy-regular-days-v6');
-    const savedSpecial = localStorage.getItem('academy-special-events-v6');
-    const savedTeachers = localStorage.getItem('academy-teachers-v6');
-    const savedRooms = localStorage.getItem('academy-rooms-v6');
+    const loadInitialData = async () => {
+      const cloudData = await loadFromSupabase();
 
-    if (savedRegular) setRegularDays(JSON.parse(savedRegular));
-    if (savedSpecial) {
-      const parsed = JSON.parse(savedSpecial);
-      setSpecialEvents(parsed);
-      if (parsed.length > 0) {
-        setSelectedEventId(parsed[0].id);
-        setSelectedDate(parsed[0].dates?.[0]?.date || null);
+      if (cloudData) {
+        setRegularDays(cloudData.regularDays || baseDays);
+        setSpecialEvents(cloudData.specialEvents || []);
+        setTeachers(cloudData.teachers || Object.keys(defaultTeacherColors));
+        setRooms(cloudData.rooms || defaultRooms);
+
+        if (cloudData.specialEvents?.length > 0) {
+          setSelectedEventId(cloudData.specialEvents[0].id);
+          setSelectedDate(cloudData.specialEvents[0].dates?.[0]?.date || null);
+        }
+
+        setSaveStatus('Supabase에서 불러옴');
+        setIsLoaded(true);
+        return;
       }
-    }
-    if (savedTeachers) setTeachers(JSON.parse(savedTeachers));
-    if (savedRooms) setRooms(JSON.parse(savedRooms));
+
+      const savedRegular = localStorage.getItem('academy-regular-days-v6');
+      const savedSpecial = localStorage.getItem('academy-special-events-v6');
+      const savedTeachers = localStorage.getItem('academy-teachers-v6');
+      const savedRooms = localStorage.getItem('academy-rooms-v6');
+
+      if (savedRegular) setRegularDays(JSON.parse(savedRegular));
+
+      if (savedSpecial) {
+        const parsed = JSON.parse(savedSpecial);
+        setSpecialEvents(parsed);
+
+        if (parsed.length > 0) {
+          setSelectedEventId(parsed[0].id);
+          setSelectedDate(parsed[0].dates?.[0]?.date || null);
+        }
+      }
+
+      if (savedTeachers) setTeachers(JSON.parse(savedTeachers));
+      if (savedRooms) setRooms(JSON.parse(savedRooms));
+
+      setSaveStatus('브라우저 저장값에서 불러옴');
+      setIsLoaded(true);
+    };
+
+    loadInitialData();
   }, []);
 
   useEffect(() => {
+    if (!isLoaded) return;
+
+    const payload = {
+      regularDays,
+      specialEvents,
+      teachers,
+      rooms,
+      updatedAt: new Date().toISOString(),
+    };
+
     localStorage.setItem('academy-regular-days-v6', JSON.stringify(regularDays));
-  }, [regularDays]);
-
-  useEffect(() => {
     localStorage.setItem('academy-special-events-v6', JSON.stringify(specialEvents));
-  }, [specialEvents]);
-
-  useEffect(() => {
     localStorage.setItem('academy-teachers-v6', JSON.stringify(teachers));
-  }, [teachers]);
-
-  useEffect(() => {
     localStorage.setItem('academy-rooms-v6', JSON.stringify(rooms));
-  }, [rooms]);
+
+    const timer = setTimeout(async () => {
+      const ok = await saveToSupabase(payload);
+      setSaveStatus(ok ? 'Supabase 저장 완료' : 'Supabase 저장 실패');
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [isLoaded, regularDays, specialEvents, teachers, rooms]);
 
   const timeSlots = useMemo(() => {
     const slots = [];
@@ -790,7 +863,10 @@ export default function WeeklyAcademyTimeline() {
       <div className="w-full md:w-[1500px] print:w-[1120px] mx-auto mb-2 flex items-end justify-between print:hidden px-2 md:px-0">
         <div>
           <h1 className="text-lg font-extrabold tracking-tight text-slate-900">주간 강의 시간표</h1>
-          <p className="text-[10px] text-slate-500 mt-0.5">현재 시간표 자동 적용 · 기본/시험대비 날짜별 예약 관리</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">
+            현재 시간표 자동 적용 · 기본/시험대비 날짜별 예약 관리
+            {saveStatus && <span className="ml-2 text-blue-600 font-bold">{saveStatus}</span>}
+          </p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => window.print()} className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50">PDF 저장</button>
